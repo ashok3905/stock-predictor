@@ -27,7 +27,7 @@ console.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
 logging.getLogger().addHandler(console)
 
 # ─── Database setup ───────────────────────────────────────────────────────────
-engine = create_engine("sqlite:///data/news.db")
+engine = create_engine(os.getenv("DATABASE_URL", "sqlite:///data/news.db"))
 
 def ensure_predictions_table():
     """Create the predictions table if it doesn't exist."""

@@ -4,9 +4,10 @@ GENERAL-tagged articles that mention multiple company names, so we can spot
 which tickers are still missing from TICKER_MAP.
 """
 
+import os
 from sqlalchemy import create_engine, text
 
-engine = create_engine("sqlite:///data/news.db")
+engine = create_engine(os.getenv("DATABASE_URL", "sqlite:///data/news.db"))
 
 with engine.connect() as conn:
     # Roundup-style headlines often start with "Stocks to Watch" or similar

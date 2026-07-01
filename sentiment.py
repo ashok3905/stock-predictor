@@ -28,7 +28,7 @@ console.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
 logging.getLogger().addHandler(console)
 
 # ─── Database setup ───────────────────────────────────────────────────────────
-engine = create_engine("sqlite:///data/news.db")
+engine = create_engine(os.getenv("DATABASE_URL", "sqlite:///data/news.db"))
 
 def ensure_sentiment_columns():
     """Add sentiment columns to the news table if they don't already exist.

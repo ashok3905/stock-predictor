@@ -1,0 +1,11 @@
+pandas
+sqlalchemy
+python-dotenv
+requests
+feedparser
+schedule
+torch
+transformers
+yfinance
+beautifulsoup4
+psycopg2-binary

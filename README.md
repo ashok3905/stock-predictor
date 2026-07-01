@@ -37,9 +37,15 @@ An AI-powered intraday trading assistant that analyzes real-time news sentiment 
 
 2.  **Install dependencies:**
     ```bash
-    pip install -r requirements.txt
+    # Full install (all scripts including sentiment analysis with PyTorch)
+    pip install -r requirements-worker.txt
+
+    # Dashboard-only install (Streamlit Cloud uses this automatically)
+    # pip install -r requirements.txt
     ```
-    > **Note:** PyTorch (`torch`) is a large dependency. If you have GPU support, you can install a CUDA-optimized version:
+    > **Note:** `requirements.txt` is trimmed for Streamlit Cloud (no torch/transformers).
+    > `requirements-worker.txt` includes everything needed for local development and Heroku workers.
+    > PyTorch (`torch`) is a large dependency (~2GB). If you have GPU support:
     > ```bash
     > pip install torch --index-url https://download.pytorch.org/whl/cu118
     > ```
@@ -117,6 +123,110 @@ The Streamlit dashboard provides:
 *   **Historical Predictions**: Browse past picks and their performance.
 *   **Sentiment Explorer**: Deep dive into individual stock sentiment trends.
 *   **Live Prices & Accuracy**: Real-time tracking and overall accuracy metrics.
+
+## ☁️ Cloud Deployment (Heroku)
+
+This app can be deployed to the cloud so it runs 24/7 without your PC.
+
+### Quick Deploy Steps
+
+1. **Push to GitHub:**
+   ```bash
+   git add .
+   git commit -m "Prepare for deployment"
+   git push origin master
+   ```
+
+2. **Create Heroku App:**
+   ```bash
+   heroku create your-app-name
+   ```
+
+3. **Add PostgreSQL Database:**
+   ```bash
+   heroku addons:create heroku-postgresql:essential-0
+   ```
+
+4. **Configure Environment Variables:**
+   ```bash
+   heroku config:set NEWS_API_KEY=your_key
+   heroku config:set EMAIL_USER=your_email@gmail.com
+   heroku config:set EMAIL_PASS=your_app_password
+   heroku config:set EMAIL_TO=recipient@email.com
+   heroku config:set TELEGRAM_BOT_TOKEN=your_token
+   heroku config:set TELEGRAM_CHAT_ID=your_chat_id
+   ```
+
+5. **Install full dependencies on Heroku** (needed for torch/transformers in sentiment analysis):
+   ```bash
+   # Create a post_compile hook so Heroku installs worker deps after the build
+   mkdir -p bin
+   echo '#!/usr/bin/env bash\n\npip install -r requirements-worker.txt\n' > bin/post_compile
+   chmod +x bin/post_compile
+   ```
+
+6. **Deploy:**
+   ```bash
+   git add bin/post_compile
+   git commit -m "Add post_compile hook for Heroku worker deps"
+   git push heroku master
+   ```
+   > **Note:** `requirements.txt` is trimmed for Streamlit Cloud (no torch/transformers).
+   > The `bin/post_compile` hook ensures Heroku installs the full `requirements-worker.txt` during build.
+
+6. **Set Up Background Jobs (Heroku Scheduler):**
+   ```bash
+   heroku addons:create scheduler:standard
+   heroku open
+   ```
+   In the Scheduler dashboard, add these jobs:
+   - `python collector.py` — Run every 10 minutes (collects news)
+   - `python sentiment.py` — Run every 10 minutes (scores articles)
+   - `python predictor.py` — Run daily at 8:30 AM IST (generates picks)
+   - `python telegram_notifier.py` — Run daily at 8:30 AM IST (sends alerts)
+   - `python price_tracker.py` — Run every 5 minutes during market hours
+
+7. **View Logs:**
+   ```bash
+   heroku logs --tail
+   ```
+
+### Streamlit Cloud (Dashboard Only)
+
+Host the dashboard for free on Streamlit Community Cloud:
+
+1. **Push to GitHub:**
+   ```bash
+   git add .
+   git commit -m "Deploy dashboard to Streamlit Cloud"
+   git push origin master
+   ```
+
+2. **Go to [share.streamlit.io](https://share.streamlit.io)** and sign in with your GitHub account.
+
+3. **Click "New app"** and configure:
+   - **Repository:** Your GitHub repo (e.g., `ashok3905/stock-predictor`)
+   - **Branch:** `master`
+   - **Main file path:** `app.py`
+
+4. **Click "Advanced settings"** and paste your secrets in the **Secrets** box:
+   ```toml
+   DATABASE_URL = "postgresql://user:password@host:5432/dbname"
+   NEWS_API_KEY = "your_newsapi_key"
+   ```
+   > The dashboard uses `os.getenv()` which picks up Streamlit Cloud secrets as environment variables.
+   > For the dashboard, `DATABASE_URL` is the only critical secret (point it to your PostgreSQL instance).
+
+5. **Click "Deploy"** — your app will be live at a public URL.
+
+> **Note:** `requirements.txt` is trimmed for fast Streamlit Cloud builds (no torch/transformers).
+> Background workers (collector, sentiment, predictor) run separately on Heroku with `requirements-worker.txt`.
+
+### PostgreSQL Migration Notes
+
+- The app auto-detects PostgreSQL via the `DATABASE_URL` environment variable
+- Falls back to SQLite for local development
+- All tables auto-create on first run
 
 ## ⚠️ Disclaimer
 

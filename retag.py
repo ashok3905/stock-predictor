@@ -7,7 +7,8 @@ Run this once after updating collector.py to refresh old rows.
 from collector import extract_tickers
 from sqlalchemy import create_engine, text
 
-engine = create_engine("sqlite:///data/news.db")
+import os
+engine = create_engine(os.getenv("DATABASE_URL", "sqlite:///data/news.db"))
 
 with engine.connect() as conn:
     rows = conn.execute(text("SELECT id, title, description FROM news")).fetchall()

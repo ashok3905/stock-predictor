@@ -1,10 +1,4 @@
 streamlit
 pandas
 sqlalchemy
-feedparser
-requests
 python-dotenv
-schedule
-transformers
-torch
-yfinance

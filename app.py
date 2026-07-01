@@ -5,6 +5,7 @@ live prices, accuracy tracking, and sentiment-accuracy correlation.
 Run with: streamlit run app.py
 """
 
+import os
 import logging
 import pandas as pd
 import streamlit as st
@@ -12,9 +13,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 
 # ─── Database setup ───────────────────────────────────────────────────────────
-# Logging for graceful error handling
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
-engine = create_engine("sqlite:///data/news.db")
+engine = create_engine(os.getenv("DATABASE_URL", "sqlite:///data/news.db"))
 
 
 def load_todays_predictions():
@@ -289,6 +289,110 @@ def load_sentiment_buckets(days=30):
         return pd.DataFrame()
 
 
+def load_most_recommended():
+    """Identify the top 3 stocks most likely to rise >1% today.
+
+    Combines today's predictions with historical accuracy data to
+    compute a confidence score for each pick. Scores factor in:
+    - Historical probability of the ticker rising >1%
+    - Current sentiment score strength
+    - Current momentum score
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        with engine.connect() as conn:
+            # Get today's predictions (already ranked by momentum)
+            preds = conn.execute(
+                text("""
+                    SELECT rank, ticker, avg_sentiment, article_count,
+                           momentum_score, reason_summary, top_headline_1, top_headline_2
+                    FROM predictions
+                    WHERE prediction_date = :d
+                    ORDER BY rank ASC
+                """),
+                {"d": today},
+            ).fetchall()
+
+            if not preds:
+                return pd.DataFrame()
+
+            # Get historical >1% probability per ticker from prediction_accuracy
+            ticker_list = [r[1] for r in preds]
+            placeholders = ",".join(f":t{i}" for i in range(len(ticker_list)))
+            params = {f"t{i}": t for i, t in enumerate(ticker_list)}
+
+            ticker_stats = conn.execute(
+                text(f"""
+                    SELECT ticker,
+                           COUNT(*) as total_predictions,
+                           SUM(CASE WHEN day_change_pct > 1 THEN 1 ELSE 0 END) as above_1pct,
+                           ROUND(AVG(day_change_pct), 2) as avg_change
+                    FROM prediction_accuracy
+                    WHERE ticker IN ({placeholders})
+                      AND day_change_pct IS NOT NULL
+                    GROUP BY ticker
+                """),
+                params,
+            ).fetchall()
+
+        # Build ticker probability map
+        ticker_prob = {}
+        for r in ticker_stats:
+            ticker, total, above_1pct, avg_change = r
+            ticker_prob[ticker] = {
+                "total": total,
+                "above_1pct": above_1pct,
+                "prob": (above_1pct / total * 100) if total > 0 else 0,
+                "avg_change": avg_change,
+            }
+
+        # Build confidence scores for each prediction
+        results = []
+        for pred in preds:
+            rank, ticker, sentiment, articles, momentum, reason, h1, h2 = pred
+            hist = ticker_prob.get(ticker, {"total": 0, "prob": 0, "avg_change": 0})
+
+            # Base confidence: use historical ticker probability if enough data (>2 runs)
+            if hist["total"] >= 2:
+                base_confidence = hist["prob"]
+            else:
+                # Heuristic for new tickers: sentiment-based baseline
+                base_confidence = max(0, (sentiment - 0.1) * 100)
+
+            # Momentum boost: stocks with strong momentum more likely to spike
+            momentum_factor = min(momentum * 5, 20)  # cap at +20%
+
+            # Sentiment boost: stronger sentiment = higher chance of >1%
+            sentiment_factor = max(0, (sentiment - 0.2) * 30)  # cap at ~+24%
+
+            final_confidence = min(base_confidence + momentum_factor + sentiment_factor, 99.9)
+
+            results.append({
+                "Rank": rank,
+                "Ticker": ticker,
+                "Sentiment": sentiment,
+                "Articles": articles,
+                "Momentum": momentum,
+                "Reason": reason or "No reason available",
+                "Headline 1": h1,
+                "Headline 2": h2,
+                "Confidence": round(final_confidence, 1),
+                "Ticker History": hist["total"],
+                "Avg Change": hist["avg_change"],
+            })
+
+        if not results:
+            return pd.DataFrame()
+
+        # Sort by confidence descending, take top 3
+        results.sort(key=lambda x: x["Confidence"], reverse=True)
+        return pd.DataFrame(results[:3])
+
+    except Exception as e:
+        logging.warning(f"Failed to load most recommended: {e}")
+        return pd.DataFrame()
+
+
 DASHBOARD_CSS = """
 <style>
     .main-header {
@@ -330,6 +434,118 @@ DASHBOARD_CSS = """
     .negative { color: #f87171 !important; }
     .neutral { color: #94a3b8 !important; }
     .section-header { color: #f1f5f9; font-size: 1.3rem; font-weight: 700; margin: 2rem 0 1rem 0; padding-bottom: 0.5rem; border-bottom: 2px solid rgba(96,165,250,0.2); }
+    .moast-section {
+        background: linear-gradient(135deg, #1e293b 0%, #2d1b69 50%, #1e293b 100%);
+        border: 1px solid rgba(245, 158, 11, 0.25);
+        border-radius: 16px;
+        padding: 1.75rem 2rem;
+        margin: 1rem 0 2rem 0;
+        box-shadow: 0 4px 24px rgba(245, 158, 11, 0.08);
+    }
+    .moast-section .moast-title {
+        color: #fbbf24;
+        font-size: 1.4rem;
+        font-weight: 700;
+        margin: 0 0 0.25rem 0;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .moast-section .moast-subtitle {
+        color: #94a3b8;
+        font-size: 0.85rem;
+        margin: 0 0 1.25rem 0;
+    }
+    .moast-card {
+        background: linear-gradient(135deg, rgba(30,41,59,0.8), rgba(45,27,105,0.4));
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 12px;
+        padding: 1.25rem;
+        height: 100%;
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .moast-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(245, 158, 11, 0.15);
+        border-color: rgba(245, 158, 11, 0.3);
+    }
+    .moast-card .moast-rank {
+        display: inline-block;
+        background: linear-gradient(135deg, #f59e0b, #d97706);
+        color: #1e293b;
+        font-weight: 800;
+        font-size: 0.75rem;
+        padding: 0.2rem 0.6rem;
+        border-radius: 20px;
+        margin-bottom: 0.5rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .moast-card .moast-ticker {
+        font-size: 1.5rem;
+        font-weight: 800;
+        color: #f1f5f9;
+        margin: 0.25rem 0;
+    }
+    .moast-card .moast-stats {
+        display: flex;
+        gap: 1rem;
+        margin: 0.5rem 0;
+        flex-wrap: wrap;
+    }
+    .moast-card .moast-stat {
+        display: flex;
+        flex-direction: column;
+    }
+    .moast-card .moast-stat-label {
+        font-size: 0.7rem;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .moast-card .moast-stat-value {
+        font-size: 1rem;
+        font-weight: 600;
+        color: #e2e8f0;
+    }
+    .moast-card .moast-stat-value.moast-positive { color: #4ade80; }
+    .moast-card .moast-stat-value.moast-gold { color: #fbbf24; }
+    .moast-card .moast-reason {
+        background: rgba(251, 191, 36, 0.08);
+        border-left: 3px solid #f59e0b;
+        padding: 0.5rem 0.75rem;
+        border-radius: 0 6px 6px 0;
+        margin: 0.5rem 0;
+        font-size: 0.85rem;
+        color: #cbd5e1;
+        line-height: 1.4;
+    }
+    .moast-card .confidence-label {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.75rem;
+        margin-top: 0.5rem;
+        color: #94a3b8;
+    }
+    .moast-card .confidence-label .pct {
+        font-weight: 700;
+        font-size: 1rem;
+        color: #fbbf24;
+    }
+    .moast-card .confidence-bar {
+        height: 6px;
+        background: rgba(255,255,255,0.08);
+        border-radius: 3px;
+        overflow: hidden;
+        margin-top: 0.25rem;
+    }
+    .moast-card .confidence-fill {
+        height: 100%;
+        border-radius: 3px;
+        background: linear-gradient(90deg, #f59e0b, #fbbf24);
+        transition: width 0.6s ease;
+    }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
@@ -417,6 +633,65 @@ def main():
                 <span class="label">{label}</span>
             </div>
             """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ─── Most Recommended Section ──────────────────────────────────────────
+    most_rec_df = load_most_recommended()
+    if not most_rec_df.empty:
+        st.markdown('<div class="moast-section">', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="moast-title">⭐ Most Recommended</div>'
+            '<div class="moast-subtitle">'
+            'Top 3 stocks most likely to rise <strong>above 1%</strong> today — ranked by historical probability &amp; current momentum'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        cols = st.columns(3)
+        for i, (_, row) in enumerate(most_rec_df.iterrows()):
+            with cols[i]:
+                ticker = row["Ticker"]
+                sentiment = row["Sentiment"]
+                momentum = row["Momentum"]
+                confidence = row["Confidence"]
+                reason = row["Reason"]
+                rank_label = ["🥇 Top Pick", "🥈 Runner Up", "🥉 Dark Horse"][i]
+
+                sent_class = "moast-positive" if sentiment > 0.3 else ""
+                hist_count = int(row["Ticker History"])
+                hist_str = f"{hist_count}x tracked" if hist_count > 0 else "New this week"
+
+                st.markdown(f"""
+                <div class="moast-card">
+                    <span class="moast-rank">{rank_label}</span>
+                    <div class="moast-ticker">{ticker}</div>
+                    <div class="moast-stats">
+                        <div class="moast-stat">
+                            <span class="moast-stat-label">Sentiment</span>
+                            <span class="moast-stat-value {sent_class}">{sentiment:+.3f}</span>
+                        </div>
+                        <div class="moast-stat">
+                            <span class="moast-stat-label">Momentum</span>
+                            <span class="moast-stat-value moast-gold">{momentum:.3f}</span>
+                        </div>
+                        <div class="moast-stat">
+                            <span class="moast-stat-label">History</span>
+                            <span class="moast-stat-value">{hist_str}</span>
+                        </div>
+                    </div>
+                    <div class="moast-reason">{reason}</div>
+                    <div class="confidence-label">
+                        <span>Probability of ↑ >1%</span>
+                        <span class="pct">{confidence:.0f}%</span>
+                    </div>
+                    <div class="confidence-bar">
+                        <div class="confidence-fill" style="width:{confidence}%;"></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
